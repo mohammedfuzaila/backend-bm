@@ -331,8 +331,8 @@ def book_view(request):
             agents = Agent.objects.filter(categories__id=service.category.id, is_available=True).distinct()
             
             for agent in agents:
-                accept_link = f"http://localhost:8000/api/booking/{booking.id}/accept/{agent.id}/"
-                reject_link = f"http://localhost:8000/api/booking/{booking.id}/reject/{agent.id}/"
+                accept_link = request.build_absolute_uri(f"/api/booking/{booking.id}/accept/{agent.id}/")
+                reject_link = request.build_absolute_uri(f"/api/booking/{booking.id}/reject/{agent.id}/")
                 
                 subject = f"🚨 New Booking Request: {service.title} | BachMates"
                 html_message = f"""
@@ -539,7 +539,7 @@ def agent_accept_booking(request, pk, agent_id):
     customer_location = getattr(customer, 'location', '') or 'Not provided'
     service_title = booking.service.title
     amount = float(booking.amount)
-    complete_link = f"http://localhost:8000/api/booking/{booking.id}/complete/{agent_id}/"
+    complete_link = request.build_absolute_uri(f"/api/booking/{booking.id}/complete/{agent_id}/")
 
     html = f"""
     <!DOCTYPE html>

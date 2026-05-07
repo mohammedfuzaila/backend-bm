@@ -16,7 +16,7 @@ def send_followup_email(booking_id, agent_id):
             subject = f"Follow-up: Is the work completed for Booking #{booking.id}?"
             
             # Construct the complete action link
-            complete_link = f"http://localhost:8000/api/booking/{booking.id}/complete/{agent_id}/"
+            complete_link = f"{settings.BACKEND_URL}/api/booking/{booking.id}/complete/{agent_id}/"
             
             message = (
                 f"Hello {booking.assigned_agent.name},\n\n"
