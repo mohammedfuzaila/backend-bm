@@ -1,0 +1,9 @@
+asgiref==3.8.1
+Django==6.0.4
+django-cors-headers==4.7.0
+gunicorn==23.0.0
+Pillow==11.1.0
+sqlparse==0.5.3
+whitenoise==6.9.0
+python-dotenv==1.0.1
+psycopg2-binary==2.9.10

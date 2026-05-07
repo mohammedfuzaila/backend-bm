@@ -1,0 +1,29 @@
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('csrf/', views.get_csrf_token, name='get_csrf_token'),
+    path('login/', views.login_view, name='login'),
+    path('register/', views.register_view, name='register'),
+    path('logout/', views.logout_view, name='logout'),
+    path('session/', views.session_view, name='session'),
+    path('services/', views.services_view, name='services'),
+    path('services/<int:pk>/', views.service_detail_view, name='service_detail'),
+    path('book/', views.book_view, name='book'),
+    path('bookings/', views.bookings_view, name='bookings'),
+    path('categories/', views.categories_view, name='categories'),
+    path('admin/stats/', views.admin_stats_view, name='admin_stats'),
+    path('admin/bookings/', views.all_bookings_view, name='admin_bookings'),
+    path('admin/bookings/<int:pk>/', views.update_booking_status_view, name='update_booking_status'),
+    path('admin/bookings/<int:pk>/delete/', views.admin_delete_booking_view, name='admin_delete_booking'),
+    path('booking/<int:pk>/', views.get_booking_detail, name='booking_detail'),
+    path('booking/<int:pk>/accept/<int:agent_id>/', views.agent_accept_booking, name='agent_accept_booking'),
+    path('booking/<int:pk>/reject/<int:agent_id>/', views.agent_reject_booking, name='agent_reject_booking'),
+    path('booking/<int:pk>/complete/<int:agent_id>/', views.agent_complete_booking, name='agent_complete_booking'),
+    path('admin/agents/', views.admin_agents_view, name='admin_agents'),
+    path('admin/agents/<int:pk>/', views.admin_agent_delete_view, name='admin_agent_delete'),
+    path('admin/categories/<int:pk>/', views.admin_category_detail_view, name='admin_category_detail'),
+    path('update-profile/', views.update_profile_view, name='update_profile'),
+    path('booking/<int:pk>/cancel/', views.cancel_booking_view, name='cancel_booking'),
+    path('latest-finished/', views.latest_finished_service_view, name='latest_finished'),
+]
