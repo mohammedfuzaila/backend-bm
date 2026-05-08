@@ -8,6 +8,7 @@ from django.core.mail import send_mail, EmailMultiAlternatives
 from django.conf import settings
 from .models import User, Service, Booking, Category, Agent
 from .tasks import schedule_followup_email
+from django.db import connection
 
 @ensure_csrf_cookie
 def get_csrf_token(request):
@@ -20,7 +21,14 @@ def login_view(request):
             data = json.loads(request.body)
             email = data.get("email")
             password = data.get("password")
+
+            if not email or not password:
+                return JsonResponse({"error": "Email and password are required"}, status=400)
+
+            # Django's authenticate uses the USERNAME_FIELD, which is 'email' here.
+            # So we pass the email value as the 'username' argument.
             user = authenticate(request, username=email, password=password)
+            
             if user is not None:
                 login(request, user)
                 return JsonResponse({
@@ -33,9 +41,10 @@ def login_view(request):
                     }
                 })
             else:
-                return JsonResponse({"error": "Invalid credentials"}, status=401)
+                return JsonResponse({"error": "Invalid email or password"}, status=401)
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=400)
+            print(f"Login error: {str(e)}")
+            return JsonResponse({"error": "An internal error occurred during login"}, status=500)
     return JsonResponse({"error": "Method not allowed"}, status=405)
 
 @csrf_exempt
@@ -49,9 +58,14 @@ def register_view(request):
             phone = data.get("phone", "")
             location = data.get("location", "")
             
-            if User.objects.filter(email=email).exists():
-                return JsonResponse({"error": "Email already registered"}, status=400)
+            if not email or not password:
+                return JsonResponse({"error": "Email and password are required"}, status=400)
             
+            if User.objects.filter(email=email).exists():
+                return JsonResponse({"error": "This email is already registered"}, status=400)
+            
+            # Create user. Since we use AbstractUser with email as USERNAME_FIELD,
+            # we set both username and email to the provided email address.
             user = User.objects.create_user(
                 username=email, 
                 email=email, 
@@ -60,9 +74,14 @@ def register_view(request):
                 phone=phone,
                 location=location
             )
-            login(request, user)
+            
+            # After create_user, we must specify the backend for login to work correctly
+            # because the user object doesn't have it set yet.
+            backend = 'django.contrib.auth.backends.ModelBackend'
+            login(request, user, backend=backend)
+            
             return JsonResponse({
-                "message": "Registered successfully", 
+                "message": "Registered and logged in successfully", 
                 "user": {
                     "id": user.id, 
                     "email": user.email,
@@ -71,7 +90,8 @@ def register_view(request):
                 }
             })
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=400)
+            print(f"Registration error: {str(e)}")
+            return JsonResponse({"error": f"Registration failed: {str(e)}"}, status=400)
     return JsonResponse({"error": "Method not allowed"}, status=405)
 
 @csrf_exempt
@@ -148,13 +168,24 @@ def admin_stats_view(request):
     if not (request.user.is_staff or request.user.is_superuser):
         return JsonResponse({"error": "Admin only"}, status=403)
     
-    total_revenue = sum(b.service.price for b in Booking.objects.filter(status='COMPLETED'))
-    return JsonResponse({
-        "revenue": float(total_revenue),
-        "total_bookings": Booking.objects.count(),
-        "completion_rate": 85, # Mock
-        "active_services": Service.objects.count()
-    })
+    try:
+        completed_bookings = Booking.objects.filter(status='COMPLETED')
+        total_revenue = sum(b.service.price for b in completed_bookings)
+        total_bookings = Booking.objects.count()
+        
+        # Calculate mock or real completion rate
+        completion_rate = 85
+        if total_bookings > 0:
+            completion_rate = round((completed_bookings.count() / total_bookings) * 100)
+
+        return JsonResponse({
+            "revenue": float(total_revenue),
+            "total_bookings": total_bookings,
+            "completion_rate": completion_rate,
+            "active_services": Service.objects.count()
+        })
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
 
 @csrf_exempt
 def services_view(request):
@@ -240,8 +271,8 @@ def latest_finished_service_view(request):
                 "status": "Finished"
             })
         return JsonResponse({"service_title": "No finished jobs yet", "status": "Ready"})
-    except Exception:
-        return JsonResponse({"service_title": "Recent Activity", "status": "Live"})
+    except Exception as e:
+        return JsonResponse({"error": "Recent Activity", "status": "Live"}, status=200)
 
 def all_bookings_view(request):
     if not (request.user.is_staff or request.user.is_superuser):
@@ -293,6 +324,73 @@ def admin_delete_booking_view(request, pk):
         return JsonResponse({"error": "Booking not found"}, status=404)
 
 
+def notify_agents_task(booking_id, service_id, customer_data, base_uri):
+    """
+    Background task to notify agents about a new booking.
+    """
+    try:
+        # It's good practice to close the old connection in a new thread
+        connection.close()
+        
+        booking = Booking.objects.get(id=booking_id)
+        service = Service.objects.get(id=service_id)
+        
+        if service.category:
+            agents = Agent.objects.filter(categories__id=service.category.id, is_available=True).distinct()
+            
+            for agent in agents:
+                try:
+                    accept_link = f"{base_uri}/api/booking/{booking.id}/accept/{agent.id}/"
+                    reject_link = f"{base_uri}/api/booking/{booking.id}/reject/{agent.id}/"
+                    
+                    subject = f"🚨 New Booking Request: {service.title} | BachMates"
+                    html_message = f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    </head>
+                    <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: sans-serif;">
+                        <div style="max-width: 600px; margin: 20px auto; background: white; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0;">
+                            <div style="background: #5c62f1; padding: 30px; text-align: center; color: white;">
+                                <h1 style="margin: 0; color: white;">New Job Alert!</h1>
+                                <p style="color: rgba(255,255,255,0.9);">Service: {service.title}</p>
+                            </div>
+                            <div style="padding: 30px;">
+                                <p>Hello <strong>{agent.name}</strong>,</p>
+                                <p>A customer has requested your expertise.</p>
+                                <div style="background: #f8fafc; padding: 20px; border-radius: 12px; margin: 20px 0; border: 1px solid #e2e8f0;">
+                                    <p style="margin: 5px 0;"><strong>Customer:</strong> {customer_data['name']}</p>
+                                    <p style="margin: 5px 0;"><strong>Location:</strong> {customer_data['location']}</p>
+                                    <p style="margin: 5px 0;"><strong>Payout:</strong> ₹{service.price}</p>
+                                </div>
+                                <div style="text-align: center; margin-top: 30px;">
+                                    <a href="{accept_link}" style="display: inline-block; background: #22c55e; color: white; padding: 14px 28px; border-radius: 10px; text-decoration: none; font-weight: bold; margin-right: 10px; box-shadow: 0 4px 12px rgba(34,197,94,0.3);">Accept Job</a>
+                                    <a href="{reject_link}" style="display: inline-block; background: #ef4444; color: white; padding: 14px 28px; border-radius: 10px; text-decoration: none; font-weight: bold; box-shadow: 0 4px 12px rgba(239,68,68,0.2);">Decline</a>
+                                </div>
+                                <p style="margin-top: 30px; font-size: 13px; color: #94a3b8; text-align: center;">Clicking accept will share the customer's contact details with you.</p>
+                            </div>
+                        </div>
+                    </body>
+                    </html>
+                    """
+                    
+                    msg = EmailMultiAlternatives(
+                        subject=subject,
+                        body=f"New booking for {service.title}. Accept at: {accept_link}",
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        to=[agent.email]
+                    )
+                    msg.attach_alternative(html_message, "text/html")
+                    msg.send(fail_silently=False)
+                except Exception as e:
+                    print(f"Error notifying agent {agent.email}: {e}")
+        
+    except Exception as e:
+        print(f"Error in notify_agents_task: {e}")
+    finally:
+        connection.close()
+
 
 @csrf_exempt
 def book_view(request):
@@ -320,64 +418,6 @@ def book_view(request):
             )
         
         # --- Notification Logic (Background Thread) ---
-        def notify_agents_task(booking_id, service_id, customer_data, base_uri):
-            try:
-                from .models import Booking, Service, Agent
-                booking = Booking.objects.get(id=booking_id)
-                service = Service.objects.get(id=service_id)
-                
-                if service.category:
-                    agents = Agent.objects.filter(categories__id=service.category.id, is_available=True).distinct()
-                    
-                    for agent in agents:
-                        try:
-                            accept_link = f"{base_uri}/api/booking/{booking.id}/accept/{agent.id}/"
-                            reject_link = f"{base_uri}/api/booking/{booking.id}/reject/{agent.id}/"
-                            
-                            subject = f"🚨 New Booking Request: {service.title} | BachMates"
-                            html_message = f"""
-                            <!DOCTYPE html>
-                            <html>
-                            <head>
-                                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                            </head>
-                            <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: sans-serif;">
-                                <div style="max-width: 600px; margin: 20px auto; background: white; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0;">
-                                    <div style="background: #5c62f1; padding: 30px; text-align: center; color: white;">
-                                        <h1 style="margin: 0;">New Job Alert!</h1>
-                                        <p>Service: {service.title}</p>
-                                    </div>
-                                    <div style="padding: 30px;">
-                                        <p>Hello <strong>{agent.name}</strong>,</p>
-                                        <p>A customer has requested your expertise.</p>
-                                        <div style="background: #f8fafc; padding: 20px; border-radius: 12px; margin: 20px 0;">
-                                            <p><strong>Customer:</strong> {customer_data['name']}</p>
-                                            <p><strong>Location:</strong> {customer_data['location']}</p>
-                                            <p><strong>Payout:</strong> ₹{service.price}</p>
-                                        </div>
-                                        <div style="text-align: center; margin-top: 30px;">
-                                            <a href="{accept_link}" style="display: inline-block; background: #22c55e; color: white; padding: 12px 25px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-right: 10px;">Accept Job</a>
-                                            <a href="{reject_link}" style="display: inline-block; background: #ef4444; color: white; padding: 12px 25px; border-radius: 8px; text-decoration: none; font-weight: bold;">Decline</a>
-                                        </div>
-                                    </div>
-                                </div>
-                            </body>
-                            </html>
-                            """
-                            
-                            msg = EmailMultiAlternatives(
-                                subject=subject,
-                                body=f"New booking for {service.title}. Accept at: {accept_link}",
-                                from_email=settings.DEFAULT_FROM_EMAIL,
-                                to=[agent.email]
-                            )
-                            msg.attach_alternative(html_message, "text/html")
-                            msg.send(fail_silently=False)
-                        except Exception as e:
-                            print(f"Error notifying agent {agent.email}: {e}")
-            except Exception as e:
-                print(f"Error in notify_agents_task: {e}")
-
         import threading
         customer_data = {
             'name': request.user.full_name or request.user.email,
@@ -389,6 +429,7 @@ def book_view(request):
             target=notify_agents_task, 
             args=(booking.id, service.id, customer_data, base_uri)
         )
+        thread.daemon = True # Ensure thread doesn't block process exit
         thread.start()
 
         return JsonResponse({
@@ -699,7 +740,6 @@ def update_profile_view(request):
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
     
-    import json
     try:
         data = json.loads(request.body)
         user = request.user
@@ -723,6 +763,7 @@ def update_profile_view(request):
             }
         })
     except Exception as e:
+        print(f"Profile update error: {e}")
         return JsonResponse({"error": str(e)}, status=400)
 
 @csrf_exempt
@@ -744,7 +785,7 @@ def cancel_booking_view(request, pk):
                 send_mail(
                     subject,
                     message,
-                    settings.EMAIL_HOST_USER,
+                    settings.DEFAULT_FROM_EMAIL,
                     [agent_email],
                     fail_silently=True,
                 )

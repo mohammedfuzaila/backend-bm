@@ -142,11 +142,18 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # Session and Cookie settings for Cross-Domain (Netlify <-> Render)
-SESSION_COOKIE_SAMESITE = 'None'
-SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SECURE = True  # Required for SameSite=None
-CSRF_COOKIE_SAMESITE = 'None'
-CSRF_COOKIE_SECURE = True
+if not DEBUG:
+    SESSION_COOKIE_SAMESITE = 'None'
+    SESSION_COOKIE_SECURE = True  # Required for SameSite=None
+    CSRF_COOKIE_SAMESITE = 'None'
+    CSRF_COOKIE_SECURE = True
+else:
+    # Local development settings
+    SESSION_COOKIE_SAMESITE = 'Lax'
+    SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SAMESITE = 'Lax'
+    CSRF_COOKIE_SECURE = False
+
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 SESSION_SAVE_EVERY_REQUEST = True
 CSRF_COOKIE_HTTPONLY = False # Allow frontend to read for headers if needed
