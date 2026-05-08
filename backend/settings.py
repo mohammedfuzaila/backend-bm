@@ -135,16 +135,18 @@ EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_USE_SSL = False
 EMAIL_HOST_USER = 'anaikarmohammedfuzail57@gmail.com'
-EMAIL_HOST_PASSWORD = 'miag sejz vfis ewwb'
+EMAIL_HOST_PASSWORD = 'miagsejzvfisewwb'  # Removed spaces for SMTP compatibility
 DEFAULT_FROM_EMAIL = 'BachMates <anaikarmohammedfuzail57@gmail.com>'
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
+# Session and Cookie settings for Cross-Domain (Netlify <-> Render)
 SESSION_COOKIE_SAMESITE = 'None'
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SECURE = True
+SESSION_COOKIE_SECURE = True  # Required for SameSite=None
 CSRF_COOKIE_SAMESITE = 'None'
 CSRF_COOKIE_SECURE = True
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 SESSION_SAVE_EVERY_REQUEST = True
+CSRF_COOKIE_HTTPONLY = False # Allow frontend to read for headers if needed

@@ -13,7 +13,6 @@ from .tasks import schedule_followup_email
 def get_csrf_token(request):
     return JsonResponse({"detail": "CSRF cookie set"})
 
-@csrf_exempt # In a real prod environment we'd use proper CSRF, but keeping exempt for simplicity if needed, or we implement CSRF fully. Since we're doing session auth, we should use CSRF. Let's just use @csrf_exempt on login/register as a fallback, or configure standard django login. Actually, with DRF missing, handling CSRF from React fetch is a bit tedious via fetch. We will require it.
 @csrf_exempt
 def login_view(request):
     if request.method == "POST":
@@ -320,122 +319,76 @@ def book_view(request):
                 amount=service.price
             )
         
-        # Pre-calculate data needed for the background thread
-        # because the 'request' object may not be available after the response is sent.
-        customer_name = request.user.full_name or request.user.email
-        customer_email = request.user.email
-        customer_phone = getattr(request.user, 'phone', 'N/A')
-        customer_location = getattr(request.user, 'location', 'N/A')
-        
-        # We use build_absolute_uri('/') to get the base domain and then build links
-        base_uri = request.build_absolute_uri('/')[:-1] # Remove trailing slash
-
         # --- Notification Logic (Background Thread) ---
-        def notify_agents_task():
-            if service.category:
-                agents = Agent.objects.filter(categories__id=service.category.id, is_available=True).distinct()
+        def notify_agents_task(booking_id, service_id, customer_data, base_uri):
+            try:
+                from .models import Booking, Service, Agent
+                booking = Booking.objects.get(id=booking_id)
+                service = Service.objects.get(id=service_id)
                 
-                for agent in agents:
-                    try:
-                        # Construct links using the pre-calculated base URI
-                        accept_link = f"{base_uri}/api/booking/{booking.id}/accept/{agent.id}/"
-                        reject_link = f"{base_uri}/api/booking/{booking.id}/reject/{agent.id}/"
-                        
-                        subject = f"🚨 New Booking Request: {service.title} | BachMates"
-                        html_message = f"""
-                        <!DOCTYPE html>
-                        <html>
-                        <head>
-                            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                            <style>
-                                @media only screen and (max-width: 600px) {{
-                                    .container {{ width: 100% !important; border-radius: 0 !important; }}
-                                    .content {{ padding: 20px !important; }}
-                                    .button-container {{ display: block !important; }}
-                                    .button {{ width: 100% !important; margin-bottom: 10px !important; display: block !important; text-align: center !important; padding: 16px 0 !important; box-sizing: border-box; }}
-                                }}
-                            </style>
-                        </head>
-                        <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-                            <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                                <tr>
-                                    <td style="padding: 20px 0;">
-                                        <table align="center" border="0" cellpadding="0" cellspacing="0" class="container" style="width: 600px; background-color: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.05); border: 1px solid #e2e8f0;">
-                                            <tr>
-                                                <td style="background: linear-gradient(135deg, #5c62f1, #3b82f6); padding: 40px; text-align: center; color: #ffffff;">
-                                                    <h1 style="margin: 0; font-size: 28px; font-weight: 900; letter-spacing: -0.02em;">New Job Alert!</h1>
-                                                    <p style="margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;">Expertise Requested: {service.category.name if service.category else 'Service'}</p>
-                                                </td>
-                                            </tr>
-                                            <tr>
-                                                <td class="content" style="padding: 40px;">
-                                                    <p style="font-size: 18px; color: #1e293b;">Hello <strong>{agent.name}</strong>,</p>
-                                                    <p style="color: #64748b; font-size: 16px; line-height: 1.6;">A customer has requested your professional expertise for <strong>{service.title}</strong>.</p>
-                                                    
-                                                    <div style="background-color: #f8fafc; border: 1px solid #f1f5f9; border-radius: 20px; padding: 25px; margin: 30px 0;">
-                                                        <h4 style="margin: 0 0 20px 0; color: #1e293b; font-size: 14px; text-transform: uppercase; letter-spacing: 0.1em;">Customer Details</h4>
-                                                        <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                                                            <tr>
-                                                                <td style="padding: 8px 0; color: #94a3b8; font-size: 14px; width: 100px;">Name</td>
-                                                                <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{customer_name}</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 8px 0; color: #94a3b8; font-size: 14px;">Email</td>
-                                                                <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{customer_email}</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 8px 0; color: #94a3b8; font-size: 14px;">Phone</td>
-                                                                <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{customer_phone}</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 8px 0; color: #94a3b8; font-size: 14px;">Location</td>
-                                                                <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{customer_location}</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 16px 0 8px 0; color: #94a3b8; font-size: 14px;">Payout</td>
-                                                                <td style="padding: 16px 0 8px 0; color: #22c55e; font-weight: 900; font-size: 18px;">₹{service.price}</td>
-                                                            </tr>
-                                                        </table>
-                                                    </div>
-                                                    
-                                                    <div class="button-container" style="margin-top: 40px; text-align: center;">
-                                                        <a href="{accept_link}" class="button" style="display: inline-block; background-color: #22c55e; color: #ffffff; padding: 16px 35px; border-radius: 14px; font-weight: 800; text-decoration: none; font-size: 16px; box-shadow: 0 10px 20px rgba(34,197,94,0.2);">✅ Accept Job</a>
-                                                        <span style="display: inline-block; width: 10px;"></span>
-                                                        <a href="{reject_link}" class="button" style="display: inline-block; background-color: #ef4444; color: #ffffff; padding: 16px 35px; border-radius: 14px; font-weight: 800; text-decoration: none; font-size: 16px;">❌ Decline</a>
-                                                    </div>
-                                                    
-                                                    <p style="margin-top: 40px; color: #94a3b8; font-size: 13px; text-align: center;">
-                                                        Please respond quickly. This request has been sent to multiple qualified agents in your area.
-                                                    </p>
-                                                </td>
-                                            </tr>
-                                            <tr>
-                                                <td style="background-color: #f8fafc; padding: 20px; text-align: center; border-top: 1px solid #f1f5f9;">
-                                                    <p style="margin: 0; color: #94a3b8; font-size: 12px; font-weight: 600;">BachMates &mdash; Live Service Platform</p>
-                                                </td>
-                                            </tr>
-                                        </table>
-                                    </td>
-                                </tr>
-                            </table>
-                        </body>
-                        </html>
-                        """
-                        
-                        msg = EmailMultiAlternatives(
-                            subject=subject,
-                            body=f"New booking for {service.title}. Accept at: {accept_link}",
-                            from_email=settings.DEFAULT_FROM_EMAIL,
-                            to=[agent.email]
-                        )
-                        msg.attach_alternative(html_message, "text/html")
-                        msg.send(fail_silently=True)
-                    except Exception as email_err:
-                        print(f"[CRITICAL EMAIL ERROR] for {agent.email}: {email_err}")
-
+                if service.category:
+                    agents = Agent.objects.filter(categories__id=service.category.id, is_available=True).distinct()
+                    
+                    for agent in agents:
+                        try:
+                            accept_link = f"{base_uri}/api/booking/{booking.id}/accept/{agent.id}/"
+                            reject_link = f"{base_uri}/api/booking/{booking.id}/reject/{agent.id}/"
+                            
+                            subject = f"🚨 New Booking Request: {service.title} | BachMates"
+                            html_message = f"""
+                            <!DOCTYPE html>
+                            <html>
+                            <head>
+                                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                            </head>
+                            <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: sans-serif;">
+                                <div style="max-width: 600px; margin: 20px auto; background: white; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0;">
+                                    <div style="background: #5c62f1; padding: 30px; text-align: center; color: white;">
+                                        <h1 style="margin: 0;">New Job Alert!</h1>
+                                        <p>Service: {service.title}</p>
+                                    </div>
+                                    <div style="padding: 30px;">
+                                        <p>Hello <strong>{agent.name}</strong>,</p>
+                                        <p>A customer has requested your expertise.</p>
+                                        <div style="background: #f8fafc; padding: 20px; border-radius: 12px; margin: 20px 0;">
+                                            <p><strong>Customer:</strong> {customer_data['name']}</p>
+                                            <p><strong>Location:</strong> {customer_data['location']}</p>
+                                            <p><strong>Payout:</strong> ₹{service.price}</p>
+                                        </div>
+                                        <div style="text-align: center; margin-top: 30px;">
+                                            <a href="{accept_link}" style="display: inline-block; background: #22c55e; color: white; padding: 12px 25px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-right: 10px;">Accept Job</a>
+                                            <a href="{reject_link}" style="display: inline-block; background: #ef4444; color: white; padding: 12px 25px; border-radius: 8px; text-decoration: none; font-weight: bold;">Decline</a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </body>
+                            </html>
+                            """
+                            
+                            msg = EmailMultiAlternatives(
+                                subject=subject,
+                                body=f"New booking for {service.title}. Accept at: {accept_link}",
+                                from_email=settings.DEFAULT_FROM_EMAIL,
+                                to=[agent.email]
+                            )
+                            msg.attach_alternative(html_message, "text/html")
+                            msg.send(fail_silently=False)
+                        except Exception as e:
+                            print(f"Error notifying agent {agent.email}: {e}")
+            except Exception as e:
+                print(f"Error in notify_agents_task: {e}")
 
         import threading
-        thread = threading.Thread(target=notify_agents_task)
+        customer_data = {
+            'name': request.user.full_name or request.user.email,
+            'location': getattr(request.user, 'location', 'N/A')
+        }
+        base_uri = request.build_absolute_uri('/')[:-1]
+        
+        thread = threading.Thread(
+            target=notify_agents_task, 
+            args=(booking.id, service.id, customer_data, base_uri)
+        )
         thread.start()
 
         return JsonResponse({
