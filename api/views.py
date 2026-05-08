@@ -4,7 +4,7 @@ from django.contrib.auth import authenticate, login, logout
 from django.views.decorators.csrf import ensure_csrf_cookie, csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import transaction
-from django.core.mail import send_mail
+from django.core.mail import send_mail, EmailMultiAlternatives
 from django.conf import settings
 from .models import User, Service, Booking, Category, Agent
 from .tasks import schedule_followup_email
@@ -320,124 +320,132 @@ def book_view(request):
                 amount=service.price
             )
         
-        # --- Notification Logic (Outside Transaction) ---
+        # Pre-calculate data needed for the background thread
+        # because the 'request' object may not be available after the response is sent.
         customer_name = request.user.full_name or request.user.email
         customer_email = request.user.email
         customer_phone = getattr(request.user, 'phone', 'N/A')
         customer_location = getattr(request.user, 'location', 'N/A')
+        
+        # We use build_absolute_uri('/') to get the base domain and then build links
+        base_uri = request.build_absolute_uri('/')[:-1] # Remove trailing slash
 
-        agents_notified = 0
-        if service.category:
-            # Robust filtering for Many-to-Many relationship
-            agents = Agent.objects.filter(categories__id=service.category.id, is_available=True).distinct()
-            
-            for agent in agents:
-                accept_link = request.build_absolute_uri(f"/api/booking/{booking.id}/accept/{agent.id}/")
-                reject_link = request.build_absolute_uri(f"/api/booking/{booking.id}/reject/{agent.id}/")
+        # --- Notification Logic (Background Thread) ---
+        def notify_agents_task():
+            if service.category:
+                agents = Agent.objects.filter(categories__id=service.category.id, is_available=True).distinct()
                 
-                subject = f"🚨 New Booking Request: {service.title} | BachMates"
-                html_message = f"""
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <style>
-                        @media only screen and (max-width: 600px) {{
-                            .container {{ width: 100% !important; border-radius: 0 !important; }}
-                            .content {{ padding: 20px !important; }}
-                            .button-container {{ display: block !important; }}
-                            .button {{ width: 100% !important; margin-bottom: 10px !important; display: block !important; text-align: center !important; padding: 16px 0 !important; box-sizing: border-box; }}
-                        }}
-                    </style>
-                </head>
-                <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-                    <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                        <tr>
-                            <td style="padding: 20px 0;">
-                                <table align="center" border="0" cellpadding="0" cellspacing="0" class="container" style="width: 600px; background-color: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.05); border: 1px solid #e2e8f0;">
-                                    <tr>
-                                        <td style="background: linear-gradient(135deg, #5c62f1, #3b82f6); padding: 40px; text-align: center; color: #ffffff;">
-                                            <h1 style="margin: 0; font-size: 28px; font-weight: 900; letter-spacing: -0.02em;">New Job Alert!</h1>
-                                            <p style="margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;">Expertise Requested: {service.category.name}</p>
-                                        </td>
-                                    </tr>
-                                    <tr>
-                                        <td class="content" style="padding: 40px;">
-                                            <p style="font-size: 18px; color: #1e293b;">Hello <strong>{agent.name}</strong>,</p>
-                                            <p style="color: #64748b; font-size: 16px; line-height: 1.6;">A customer has requested your professional expertise for <strong>{service.title}</strong>.</p>
-                                            
-                                            <div style="background-color: #f8fafc; border: 1px solid #f1f5f9; border-radius: 20px; padding: 25px; margin: 30px 0;">
-                                                <h4 style="margin: 0 0 20px 0; color: #1e293b; font-size: 14px; text-transform: uppercase; letter-spacing: 0.1em;">Customer Details</h4>
-                                                <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                                                    <tr>
-                                                        <td style="padding: 8px 0; color: #94a3b8; font-size: 14px; width: 100px;">Name</td>
-                                                        <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{customer_name}</td>
-                                                    </tr>
-                                                    <tr>
-                                                        <td style="padding: 8px 0; color: #94a3b8; font-size: 14px;">Email</td>
-                                                        <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{customer_email}</td>
-                                                    </tr>
-                                                    <tr>
-                                                        <td style="padding: 8px 0; color: #94a3b8; font-size: 14px;">Phone</td>
-                                                        <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{customer_phone}</td>
-                                                    </tr>
-                                                    <tr>
-                                                        <td style="padding: 8px 0; color: #94a3b8; font-size: 14px;">Location</td>
-                                                        <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{customer_location}</td>
-                                                    </tr>
-                                                    <tr>
-                                                        <td style="padding: 16px 0 8px 0; color: #94a3b8; font-size: 14px;">Payout</td>
-                                                        <td style="padding: 16px 0 8px 0; color: #22c55e; font-weight: 900; font-size: 18px;">₹{service.price}</td>
-                                                    </tr>
-                                                </table>
-                                            </div>
-                                            
-                                            <div class="button-container" style="margin-top: 40px; text-align: center;">
-                                                <a href="{accept_link}" class="button" style="display: inline-block; background-color: #22c55e; color: #ffffff; padding: 16px 35px; border-radius: 14px; font-weight: 800; text-decoration: none; font-size: 16px; box-shadow: 0 10px 20px rgba(34,197,94,0.2);">✅ Accept Job</a>
-                                                <span style="display: inline-block; width: 10px;"></span>
-                                                <a href="{reject_link}" class="button" style="display: inline-block; background-color: #ef4444; color: #ffffff; padding: 16px 35px; border-radius: 14px; font-weight: 800; text-decoration: none; font-size: 16px;">❌ Decline</a>
-                                            </div>
-                                            
-                                            <p style="margin-top: 40px; color: #94a3b8; font-size: 13px; text-align: center;">
-                                                Please respond quickly. This request has been sent to multiple qualified agents in your area.
-                                            </p>
-                                        </td>
-                                    </tr>
-                                    <tr>
-                                        <td style="background-color: #f8fafc; padding: 20px; text-align: center; border-top: 1px solid #f1f5f9;">
-                                            <p style="margin: 0; color: #94a3b8; font-size: 12px; font-weight: 600;">BachMates &mdash; Live Service Platform</p>
-                                        </td>
-                                    </tr>
-                                </table>
-                            </td>
-                        </tr>
-                    </table>
-                </body>
-                </html>
-                """
-                
-                try:
-                    from django.core.mail import EmailMultiAlternatives
-                    msg = EmailMultiAlternatives(
-                        subject=subject,
-                        body=f"New booking for {service.title}. Accept at: {accept_link}",
-                        from_email=settings.DEFAULT_FROM_EMAIL,
-                        to=[agent.email]
-                    )
-                    msg.attach_alternative(html_message, "text/html")
-                    msg.send(fail_silently=False) # Changed to False to see errors in console
-                    agents_notified += 1
-                except Exception as email_err:
-                    print(f"[CRITICAL EMAIL ERROR] for {agent.email}: {email_err}")
+                for agent in agents:
+                    try:
+                        # Construct links using the pre-calculated base URI
+                        accept_link = f"{base_uri}/api/booking/{booking.id}/accept/{agent.id}/"
+                        reject_link = f"{base_uri}/api/booking/{booking.id}/reject/{agent.id}/"
+                        
+                        subject = f"🚨 New Booking Request: {service.title} | BachMates"
+                        html_message = f"""
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                            <style>
+                                @media only screen and (max-width: 600px) {{
+                                    .container {{ width: 100% !important; border-radius: 0 !important; }}
+                                    .content {{ padding: 20px !important; }}
+                                    .button-container {{ display: block !important; }}
+                                    .button {{ width: 100% !important; margin-bottom: 10px !important; display: block !important; text-align: center !important; padding: 16px 0 !important; box-sizing: border-box; }}
+                                }}
+                            </style>
+                        </head>
+                        <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+                            <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                                <tr>
+                                    <td style="padding: 20px 0;">
+                                        <table align="center" border="0" cellpadding="0" cellspacing="0" class="container" style="width: 600px; background-color: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.05); border: 1px solid #e2e8f0;">
+                                            <tr>
+                                                <td style="background: linear-gradient(135deg, #5c62f1, #3b82f6); padding: 40px; text-align: center; color: #ffffff;">
+                                                    <h1 style="margin: 0; font-size: 28px; font-weight: 900; letter-spacing: -0.02em;">New Job Alert!</h1>
+                                                    <p style="margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;">Expertise Requested: {service.category.name if service.category else 'Service'}</p>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td class="content" style="padding: 40px;">
+                                                    <p style="font-size: 18px; color: #1e293b;">Hello <strong>{agent.name}</strong>,</p>
+                                                    <p style="color: #64748b; font-size: 16px; line-height: 1.6;">A customer has requested your professional expertise for <strong>{service.title}</strong>.</p>
+                                                    
+                                                    <div style="background-color: #f8fafc; border: 1px solid #f1f5f9; border-radius: 20px; padding: 25px; margin: 30px 0;">
+                                                        <h4 style="margin: 0 0 20px 0; color: #1e293b; font-size: 14px; text-transform: uppercase; letter-spacing: 0.1em;">Customer Details</h4>
+                                                        <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                                                            <tr>
+                                                                <td style="padding: 8px 0; color: #94a3b8; font-size: 14px; width: 100px;">Name</td>
+                                                                <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{customer_name}</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 8px 0; color: #94a3b8; font-size: 14px;">Email</td>
+                                                                <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{customer_email}</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 8px 0; color: #94a3b8; font-size: 14px;">Phone</td>
+                                                                <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{customer_phone}</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 8px 0; color: #94a3b8; font-size: 14px;">Location</td>
+                                                                <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{customer_location}</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 16px 0 8px 0; color: #94a3b8; font-size: 14px;">Payout</td>
+                                                                <td style="padding: 16px 0 8px 0; color: #22c55e; font-weight: 900; font-size: 18px;">₹{service.price}</td>
+                                                            </tr>
+                                                        </table>
+                                                    </div>
+                                                    
+                                                    <div class="button-container" style="margin-top: 40px; text-align: center;">
+                                                        <a href="{accept_link}" class="button" style="display: inline-block; background-color: #22c55e; color: #ffffff; padding: 16px 35px; border-radius: 14px; font-weight: 800; text-decoration: none; font-size: 16px; box-shadow: 0 10px 20px rgba(34,197,94,0.2);">✅ Accept Job</a>
+                                                        <span style="display: inline-block; width: 10px;"></span>
+                                                        <a href="{reject_link}" class="button" style="display: inline-block; background-color: #ef4444; color: #ffffff; padding: 16px 35px; border-radius: 14px; font-weight: 800; text-decoration: none; font-size: 16px;">❌ Decline</a>
+                                                    </div>
+                                                    
+                                                    <p style="margin-top: 40px; color: #94a3b8; font-size: 13px; text-align: center;">
+                                                        Please respond quickly. This request has been sent to multiple qualified agents in your area.
+                                                    </p>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td style="background-color: #f8fafc; padding: 20px; text-align: center; border-top: 1px solid #f1f5f9;">
+                                                    <p style="margin: 0; color: #94a3b8; font-size: 12px; font-weight: 600;">BachMates &mdash; Live Service Platform</p>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+                        </body>
+                        </html>
+                        """
+                        
+                        msg = EmailMultiAlternatives(
+                            subject=subject,
+                            body=f"New booking for {service.title}. Accept at: {accept_link}",
+                            from_email=settings.DEFAULT_FROM_EMAIL,
+                            to=[agent.email]
+                        )
+                        msg.attach_alternative(html_message, "text/html")
+                        msg.send(fail_silently=True)
+                    except Exception as email_err:
+                        print(f"[CRITICAL EMAIL ERROR] for {agent.email}: {email_err}")
+
+
+        import threading
+        thread = threading.Thread(target=notify_agents_task)
+        thread.start()
 
         return JsonResponse({
             "message": "Searching for professional...",
             "booking_id": booking.id,
             "status": booking.status,
             "service_title": service.title,
-            "agents_notified": agents_notified,
             "amount": float(booking.amount)
         })
+
 
     except Service.DoesNotExist:
         return JsonResponse({"error": "Service not found"}, status=404)
