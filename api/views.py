@@ -300,12 +300,13 @@ def book_view(request):
     """
     Unified booking view that creates the record and then triggers notifications.
     """
-    if request.method != "POST":
-        return JsonResponse({"error": "Method not allowed"}, status=405)
-    if not request.user.is_authenticated:
-        return JsonResponse({"error": "Authentication required"}, status=401)
-
     try:
+        if request.method != "POST":
+            return JsonResponse({"error": "Method not allowed"}, status=405)
+            
+        if not request.user.is_authenticated:
+            return JsonResponse({"error": "Authentication required"}, status=401)
+
         data = json.loads(request.body)
         service_id = data.get('service_id')
         service = Service.objects.get(id=service_id)

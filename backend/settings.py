@@ -83,11 +83,13 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'api.User'
 
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:5174",
     "https://bachmates.netlify.app",
     "https://bm-adminpanel.netlify.app",
+    "https://www.bachmates.netlify.app",
 ]
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = [
@@ -116,6 +118,8 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5174",
     "https://bachmates.netlify.app",
     "https://bm-adminpanel.netlify.app",
+    "https://www.bachmates.netlify.app",
+    "https://backend-bm-9abv.onrender.com",
 ]
 
 RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL')
