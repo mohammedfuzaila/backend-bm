@@ -324,82 +324,106 @@ def admin_delete_booking_view(request, pk):
         return JsonResponse({"error": "Booking not found"}, status=404)
 
 
-def notify_agents_task(booking_id, service_id, customer_data, base_uri):
+def notify_agents_background(booking_id, service_id, customer_data, base_uri):
     """
-    Background task to notify agents about a new booking.
+    Background task to notify agents. 
+    Optimized to use a single SMTP connection for better performance.
     """
+    from django.db import close_old_connections
+    from django.core.mail import get_connection
+    
     try:
-        # Avoid using the parent thread's connection
-        from django.db import connections
-        for conn in connections.all():
-            conn.close()
-            
+        # Ensure a fresh DB connection in this thread
+        close_old_connections()
+        
         booking = Booking.objects.get(id=booking_id)
         service = Service.objects.get(id=service_id)
         
-        if service.category:
-            agents = Agent.objects.filter(categories__id=service.category.id, is_available=True).distinct()
-            
-            for agent in agents:
-                try:
-                    accept_link = f"{base_uri}/api/booking/{booking.id}/accept/{agent.id}/"
-                    reject_link = f"{base_uri}/api/booking/{booking.id}/reject/{agent.id}/"
-                    
-                    subject = f"🚨 New Booking Request: {service.title} | BachMates"
-                    html_message = f"""
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    </head>
-                    <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: sans-serif;">
-                        <div style="max-width: 600px; margin: 20px auto; background: white; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0;">
-                            <div style="background: #5c62f1; padding: 30px; text-align: center; color: white;">
-                                <h1 style="margin: 0; color: white;">New Job Alert!</h1>
-                                <p style="color: rgba(255,255,255,0.9);">Service: {service.title}</p>
-                            </div>
-                            <div style="padding: 30px;">
-                                <p>Hello <strong>{agent.name}</strong>,</p>
-                                <p>A customer has requested your expertise.</p>
-                                <div style="background: #f8fafc; padding: 20px; border-radius: 12px; margin: 20px 0; border: 1px solid #e2e8f0;">
-                                    <p style="margin: 5px 0;"><strong>Customer:</strong> {customer_data['name']}</p>
-                                    <p style="margin: 5px 0;"><strong>Location:</strong> {customer_data['location']}</p>
-                                    <p style="margin: 5px 0;"><strong>Payout:</strong> ₹{service.price}</p>
-                                </div>
-                                <div style="text-align: center; margin-top: 30px;">
-                                    <a href="{accept_link}" style="display: inline-block; background: #22c55e; color: white; padding: 14px 28px; border-radius: 10px; text-decoration: none; font-weight: bold; margin-right: 10px; box-shadow: 0 4px 12px rgba(34,197,94,0.3);">Accept Job</a>
-                                    <a href="{reject_link}" style="display: inline-block; background: #ef4444; color: white; padding: 14px 28px; border-radius: 10px; text-decoration: none; font-weight: bold; box-shadow: 0 4px 12px rgba(239,68,68,0.2);">Decline</a>
-                                </div>
-                                <p style="margin-top: 30px; font-size: 13px; color: #94a3b8; text-align: center;">Clicking accept will share the customer's contact details with you.</p>
-                            </div>
-                        </div>
-                    </body>
-                    </html>
-                    """
-                    
-                    msg = EmailMultiAlternatives(
-                        subject=subject,
-                        body=f"New booking for {service.title}. Accept at: {accept_link}",
-                        from_email=settings.DEFAULT_FROM_EMAIL,
-                        to=[agent.email]
-                    )
-                    msg.attach_alternative(html_message, "text/html")
-                    msg.send(fail_silently=False)
-                except Exception as e:
-                    print(f"Error notifying agent {agent.email}: {e}")
+        if not service.category:
+            print(f"No category for service {service.id}, cannot notify agents.")
+            return
+
+        agents = Agent.objects.filter(categories__id=service.category.id, is_available=True).distinct()
+        if not agents.exists():
+            print(f"No available agents found for category {service.category.name}")
+            booking.status = 'FAILED'
+            booking.save()
+            return
+
+        # Use a single connection for all emails to speed up the process
+        connection = get_connection()
+        connection.open()
         
+        emails_sent = 0
+        messages = []
+        
+        for agent in agents:
+            accept_link = f"{base_uri}/api/booking/{booking.id}/accept/{agent.id}/"
+            reject_link = f"{base_uri}/api/booking/{booking.id}/reject/{agent.id}/"
+            
+            subject = f"🚨 New Booking Request: {service.title} | BachMates"
+            html_message = f"""
+            <!DOCTYPE html>
+            <html>
+            <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+            <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: sans-serif;">
+                <div style="max-width: 600px; margin: 20px auto; background: white; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0;">
+                    <div style="background: #5c62f1; padding: 30px; text-align: center; color: white;">
+                        <h1 style="margin: 0; color: white;">New Job Alert!</h1>
+                        <p style="color: rgba(255,255,255,0.9);">Service: {service.title}</p>
+                    </div>
+                    <div style="padding: 30px;">
+                        <p>Hello <strong>{agent.name}</strong>,</p>
+                        <p>A customer has requested your expertise.</p>
+                        <div style="background: #f8fafc; padding: 20px; border-radius: 12px; margin: 20px 0; border: 1px solid #e2e8f0;">
+                            <p style="margin: 5px 0;"><strong>Customer:</strong> {customer_data['name']}</p>
+                            <p style="margin: 5px 0;"><strong>Location:</strong> {customer_data['location']}</p>
+                            <p style="margin: 5px 0;"><strong>Payout:</strong> ₹{service.price}</p>
+                        </div>
+                        <div style="text-align: center; margin-top: 30px;">
+                            <a href="{accept_link}" style="display: inline-block; background: #22c55e; color: white; padding: 14px 28px; border-radius: 10px; text-decoration: none; font-weight: bold; margin-right: 10px; box-shadow: 0 4px 12px rgba(34,197,94,0.3);">Accept Job</a>
+                            <a href="{reject_link}" style="display: inline-block; background: #ef4444; color: white; padding: 14px 28px; border-radius: 10px; text-decoration: none; font-weight: bold; box-shadow: 0 4px 12px rgba(239,68,68,0.2);">Decline</a>
+                        </div>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
+            msg = EmailMultiAlternatives(
+                subject=subject,
+                body=f"New booking for {service.title}. Accept at: {accept_link}",
+                from_email=settings.EMAIL_HOST_USER,
+                to=[agent.email],
+                connection=connection
+            )
+            msg.attach_alternative(html_message, "text/html")
+            messages.append(msg)
+
+        if messages:
+            # Send all messages through the same connection
+            connection.send_messages(messages)
+            emails_sent = len(messages)
+            print(f"Successfully sent {emails_sent} notification emails.")
+        
+        connection.close()
+
     except Exception as e:
-        print(f"Error in notify_agents_task: {e}")
+        print(f"Critical error in notify_agents_background: {e}")
+        try:
+            booking = Booking.objects.get(id=booking_id)
+            booking.status = 'FAILED'
+            booking.save()
+        except:
+            pass
     finally:
-        from django.db import connections
-        for conn in connections.all():
-            conn.close()
+        close_old_connections()
 
 
 @csrf_exempt
 def book_view(request):
     """
-    Unified booking view that creates the record and then triggers notifications.
+    Unified booking view that creates the record and then triggers notifications in the background.
     """
     try:
         if request.method != "POST":
@@ -412,7 +436,6 @@ def book_view(request):
         service_id = data.get('service_id')
         service = Service.objects.get(id=service_id)
         
-        # Create booking in a transaction
         with transaction.atomic():
             booking = Booking.objects.create(
                 user=request.user,
@@ -421,19 +444,20 @@ def book_view(request):
                 amount=service.price
             )
         
-        # --- Notification Logic (Background Thread) ---
-        import threading
+        # Data for the background thread
         customer_data = {
             'name': request.user.full_name or request.user.email,
             'location': getattr(request.user, 'location', 'N/A')
         }
         base_uri = request.build_absolute_uri('/')[:-1]
         
+        # Start notification in background to prevent request timeout (Render/Gunicorn)
+        import threading
         thread = threading.Thread(
-            target=notify_agents_task, 
+            target=notify_agents_background, 
             args=(booking.id, service.id, customer_data, base_uri)
         )
-        thread.daemon = True # Ensure thread doesn't block process exit
+        thread.daemon = True
         thread.start()
 
         return JsonResponse({
@@ -443,7 +467,6 @@ def book_view(request):
             "service_title": service.title,
             "amount": float(booking.amount)
         })
-
 
     except Service.DoesNotExist:
         return JsonResponse({"error": "Service not found"}, status=404)
