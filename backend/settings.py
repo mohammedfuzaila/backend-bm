@@ -119,6 +119,7 @@ CORS_PREFLIGHT_MAX_AGE = 86400
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:5174",
+    "https://*.netlify.app",
     "https://bachmates.netlify.app",
     "https://bm-adminpanel.netlify.app",
     "https://www.bachmates.netlify.app",
@@ -142,7 +143,7 @@ EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_USE_SSL = False
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', 'anaikarmohammedfuzail57@gmail.com')
-EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', 'miagsejzvfisewwb')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', 'zrowwvzmqovvbyra')
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'BachMates <anaikarmohammedfuzail57@gmail.com>')
 EMAIL_TIMEOUT = 10
 
