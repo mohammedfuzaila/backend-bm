@@ -91,6 +91,9 @@ CORS_ALLOWED_ORIGINS = [
     "https://bm-adminpanel.netlify.app",
     "https://www.bachmates.netlify.app",
 ]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://.*\.netlify\.app$",
+]
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = [
     "DELETE",
@@ -123,20 +126,25 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL')
+if not RENDER_EXTERNAL_URL and os.environ.get('RENDER_EXTERNAL_HOSTNAME'):
+    RENDER_EXTERNAL_URL = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}"
+
 if RENDER_EXTERNAL_URL:
-    CSRF_TRUSTED_ORIGINS.append(RENDER_EXTERNAL_URL)
+    if RENDER_EXTERNAL_URL not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(RENDER_EXTERNAL_URL)
     BACKEND_URL = RENDER_EXTERNAL_URL
 else:
-    BACKEND_URL = "http://localhost:8000"
+    BACKEND_URL = "https://backend-bm-9abv.onrender.com"
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_USE_SSL = False
-EMAIL_HOST_USER = 'anaikarmohammedfuzail57@gmail.com'
-EMAIL_HOST_PASSWORD = 'miagsejzvfisewwb'  # Removed spaces for SMTP compatibility
-DEFAULT_FROM_EMAIL = 'BachMates <anaikarmohammedfuzail57@gmail.com>'
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', 'anaikarmohammedfuzail57@gmail.com')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', 'miagsejzvfisewwb')
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'BachMates <anaikarmohammedfuzail57@gmail.com>')
+EMAIL_TIMEOUT = 10
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')

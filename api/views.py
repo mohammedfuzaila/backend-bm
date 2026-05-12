@@ -329,9 +329,11 @@ def notify_agents_task(booking_id, service_id, customer_data, base_uri):
     Background task to notify agents about a new booking.
     """
     try:
-        # It's good practice to close the old connection in a new thread
-        connection.close()
-        
+        # Avoid using the parent thread's connection
+        from django.db import connections
+        for conn in connections.all():
+            conn.close()
+            
         booking = Booking.objects.get(id=booking_id)
         service = Service.objects.get(id=service_id)
         
@@ -389,7 +391,9 @@ def notify_agents_task(booking_id, service_id, customer_data, base_uri):
     except Exception as e:
         print(f"Error in notify_agents_task: {e}")
     finally:
-        connection.close()
+        from django.db import connections
+        for conn in connections.all():
+            conn.close()
 
 
 @csrf_exempt
