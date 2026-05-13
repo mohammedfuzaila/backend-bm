@@ -1,7 +1,7 @@
 import threading
-from django.core.mail import send_mail
 from django.conf import settings
 from .models import Booking
+import sib_api_v3_sdk
 
 def send_followup_email(booking_id, agent_id):
     """
@@ -27,13 +27,17 @@ def send_followup_email(booking_id, agent_id):
                 f"Thank you!"
             )
             
-            send_mail(
-                subject,
-                message,
-                settings.DEFAULT_FROM_EMAIL if hasattr(settings, 'DEFAULT_FROM_EMAIL') else 'noreply@bachmates.com',
-                [agent_email],
-                fail_silently=False,
+            configuration = sib_api_v3_sdk.Configuration()
+            configuration.api_key['api-key'] = settings.BREVO_API_KEY
+            api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
+            
+            send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
+                to=[{"email": agent_email}],
+                html_content=message,
+                subject=subject,
+                sender={"email": settings.DEFAULT_FROM_EMAIL, "name": "BachMates"}
             )
+            api_instance.send_transac_email(send_smtp_email)
             print(f"Follow-up email sent to {agent_email} for booking {booking.id}.")
     except Booking.DoesNotExist:
         print(f"Booking {booking_id} not found for follow-up.")

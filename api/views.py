@@ -1,14 +1,16 @@
 import json
+import os
 from django.http import JsonResponse, HttpResponse
 from django.contrib.auth import authenticate, login, logout
 from django.views.decorators.csrf import ensure_csrf_cookie, csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import transaction
-from django.core.mail import send_mail, EmailMultiAlternatives
 from django.conf import settings
 from .models import User, Service, Booking, Category, Agent
 from .tasks import schedule_followup_email
 from django.db import connection
+import sib_api_v3_sdk
+from sib_api_v3_sdk.rest import ApiException
 
 @ensure_csrf_cookie
 def get_csrf_token(request):
@@ -322,102 +324,89 @@ def admin_delete_booking_view(request, pk):
         return JsonResponse({"message": "Booking deleted successfully"})
     except Booking.DoesNotExist:
         return JsonResponse({"error": "Booking not found"}, status=404)
-
-
 def notify_agents_background(booking_id, service_id, customer_data, base_uri):
     """
-    Background task to notify agents. 
-    Optimized to use a single SMTP connection for better performance.
+    Notifies agents synchronously to ensure reliability.
     """
-    from django.db import close_old_connections
-    from django.core.mail import get_connection
+    from django.core.mail import EmailMultiAlternatives
+    from django.conf import settings
     
     try:
-        # Ensure a fresh DB connection in this thread
-        close_old_connections()
-        
         booking = Booking.objects.get(id=booking_id)
         service = Service.objects.get(id=service_id)
         
-        if not service.category:
-            print(f"No category for service {service.id}, cannot notify agents.")
-            return
-
-        agents = Agent.objects.filter(categories__id=service.category.id, is_available=True).distinct()
-        if not agents.exists():
-            print(f"No available agents found for category {service.category.name}")
-            booking.status = 'FAILED'
-            booking.save()
-            return
-
-        # Use a single connection for all emails to speed up the process
-        connection = get_connection()
-        connection.open()
+        # Get agents for the service category
+        agents = Agent.objects.filter(categories__id=service.category_id, is_available=True).distinct()
         
-        emails_sent = 0
-        messages = []
+        if not agents.exists():
+            print(f"[WARNING] No specific agents found for category {service.category_id}. Trying fallback to all available agents.")
+            # Fallback: Notify all available agents if category-specific ones aren't found
+            agents = Agent.objects.filter(is_available=True).distinct()
+            
+        if not agents.exists():
+            print("[CRITICAL] No agents found at all in the database!")
+            # We don't set it to FAILED immediately anymore, let it "search" 
+            # while the admin can fix it in real-time.
+            return
+
+        if not base_uri:
+            base_uri = getattr(settings, 'BACKEND_URL', 'http://localhost:8000')
+        
+        from_email = settings.DEFAULT_FROM_EMAIL
+        
+        # Configure Brevo API
+        configuration = sib_api_v3_sdk.Configuration()
+        configuration.api_key['api-key'] = settings.BREVO_API_KEY
+        api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
         
         for agent in agents:
             accept_link = f"{base_uri}/api/booking/{booking.id}/accept/{agent.id}/"
-            reject_link = f"{base_uri}/api/booking/{booking.id}/reject/{agent.id}/"
             
-            subject = f"🚨 New Booking Request: {service.title} | BachMates"
+            subject = f"🚨 New Job Request: {service.title}"
             html_message = f"""
-            <!DOCTYPE html>
             <html>
-            <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-            <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: sans-serif;">
-                <div style="max-width: 600px; margin: 20px auto; background: white; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0;">
-                    <div style="background: #5c62f1; padding: 30px; text-align: center; color: white;">
-                        <h1 style="margin: 0; color: white;">New Job Alert!</h1>
-                        <p style="color: rgba(255,255,255,0.9);">Service: {service.title}</p>
+            <body style="font-family: sans-serif; background-color: #f8fafc; padding: 20px;">
+                <div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; padding: 30px; border: 1px solid #e2e8f0;">
+                    <h2 style="color: #5c62f1;">New Job Alert!</h2>
+                    <p>Hello <strong>{agent.name}</strong>, a new service has been requested:</p>
+                    <div style="background: #f1f5f9; padding: 15px; border-radius: 8px;">
+                        <p><strong>Service:</strong> {service.title}</p>
+                        <p><strong>Customer:</strong> {customer_data['name']}</p>
+                        <p><strong>Location:</strong> {customer_data['location']}</p>
                     </div>
-                    <div style="padding: 30px;">
-                        <p>Hello <strong>{agent.name}</strong>,</p>
-                        <p>A customer has requested your expertise.</p>
-                        <div style="background: #f8fafc; padding: 20px; border-radius: 12px; margin: 20px 0; border: 1px solid #e2e8f0;">
-                            <p style="margin: 5px 0;"><strong>Customer:</strong> {customer_data['name']}</p>
-                            <p style="margin: 5px 0;"><strong>Location:</strong> {customer_data['location']}</p>
-                            <p style="margin: 5px 0;"><strong>Payout:</strong> ₹{service.price}</p>
-                        </div>
-                        <div style="text-align: center; margin-top: 30px;">
-                            <a href="{accept_link}" style="display: inline-block; background: #22c55e; color: white; padding: 14px 28px; border-radius: 10px; text-decoration: none; font-weight: bold; margin-right: 10px; box-shadow: 0 4px 12px rgba(34,197,94,0.3);">Accept Job</a>
-                            <a href="{reject_link}" style="display: inline-block; background: #ef4444; color: white; padding: 14px 28px; border-radius: 10px; text-decoration: none; font-weight: bold; box-shadow: 0 4px 12px rgba(239,68,68,0.2);">Decline</a>
-                        </div>
+                    <div style="margin-top: 25px;">
+                        <a href="{accept_link}" style="background: #22c55e; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold;">Accept Job</a>
                     </div>
                 </div>
             </body>
             </html>
             """
             
-            msg = EmailMultiAlternatives(
+            # Send using Brevo API
+            send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
+                to=[{"email": agent.email, "name": agent.name}],
+                reply_to={"email": from_email, "name": "BachMates"},
+                html_content=html_message,
                 subject=subject,
-                body=f"New booking for {service.title}. Accept at: {accept_link}",
-                from_email=settings.EMAIL_HOST_USER,
-                to=[agent.email],
-                connection=connection
+                sender={"email": from_email, "name": "BachMates"}
             )
-            msg.attach_alternative(html_message, "text/html")
-            messages.append(msg)
-
-        if messages:
-            # Send all messages through the same connection
-            connection.send_messages(messages)
-            emails_sent = len(messages)
-            print(f"Successfully sent {emails_sent} notification emails.")
-        
-        connection.close()
+            
+            try:
+                api_instance.send_transac_email(send_smtp_email)
+                print(f"[SUCCESS] Brevo dispatched email to {agent.email}")
+            except ApiException as e:
+                print(f"[ERROR] Brevo failed for {agent.email}: {str(e)}")
+            
+        print(f"[SUCCESS] Notified {agents.count()} agents for {service.title}")
 
     except Exception as e:
-        print(f"Critical error in notify_agents_background: {e}")
+        print(f"[CRITICAL] Notification failure: {e}")
         try:
             booking = Booking.objects.get(id=booking_id)
-            booking.status = 'FAILED'
+            booking.status = 'EMAIL_FAILED'
             booking.save()
         except:
             pass
-    finally:
-        close_old_connections()
 
 
 @csrf_exempt
@@ -447,18 +436,36 @@ def book_view(request):
         # Data for the background thread
         customer_data = {
             'name': request.user.full_name or request.user.email,
+            'email': request.user.email,
+            'phone': getattr(request.user, 'phone', 'Not provided'),
             'location': getattr(request.user, 'location', 'N/A')
         }
         base_uri = request.build_absolute_uri('/')[:-1]
         
-        # Start notification in background to prevent request timeout (Render/Gunicorn)
-        import threading
-        thread = threading.Thread(
-            target=notify_agents_background, 
-            args=(booking.id, service.id, customer_data, base_uri)
-        )
-        thread.daemon = True
-        thread.start()
+        # Start notification - Synchronous to guarantee delivery
+        try:
+            # 1. Send confirmation to user using Brevo
+            configuration = sib_api_v3_sdk.Configuration()
+            configuration.api_key['api-key'] = settings.BREVO_API_KEY
+            api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
+            
+            send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
+                to=[{"email": request.user.email}],
+                html_content=f"<h3>We have received your booking for {service.title}.</h3><p>We are searching for an agent now.</p>",
+                subject="Booking Received - BachMates",
+                sender={"email": settings.DEFAULT_FROM_EMAIL, "name": "BachMates"}
+            )
+            
+            try:
+                api_instance.send_transac_email(send_smtp_email)
+            except Exception as e:
+                print(f"[ERROR] User confirmation email failed: {str(e)}")
+            
+            # 2. Notify Agents
+            notify_agents_background(booking.id, service.id, customer_data, base_uri)
+            
+        except Exception as notify_err:
+            print(f"[ERROR] Notification failed: {notify_err}")
 
         return JsonResponse({
             "message": "Searching for professional...",
@@ -809,13 +816,18 @@ def cancel_booking_view(request, pk):
                 subject = f'Service Cancelled: {service_name}'
                 message = f'Hello {booking.assigned_agent.name},\n\nYour service for {service_name} will be cancelled. Please don\'t go to the location. \n\nWait for another service request in the meantime.\n\nThank you,\nBachMates Team'
                 
-                send_mail(
-                    subject,
-                    message,
-                    settings.DEFAULT_FROM_EMAIL,
-                    [agent_email],
-                    fail_silently=True,
+                # Send using Brevo API
+                configuration = sib_api_v3_sdk.Configuration()
+                configuration.api_key['api-key'] = settings.BREVO_API_KEY
+                api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
+                
+                send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
+                    to=[{"email": agent_email}],
+                    html_content=f"<p>{message}</p>",
+                    subject=subject,
+                    sender={"email": settings.DEFAULT_FROM_EMAIL, "name": "BachMates"}
                 )
+                api_instance.send_transac_email(send_smtp_email)
             except Exception as e:
                 print(f"Error sending cancellation email to agent: {e}")
 
@@ -829,3 +841,23 @@ def cancel_booking_view(request, pk):
         return JsonResponse({"error": "Booking not found"}, status=404)
 
 
+
+@csrf_exempt
+def test_email_view(request):
+    if not (request.user.is_staff or request.user.is_superuser):
+        return JsonResponse({'error': 'Admin only'}, status=403)
+    try:
+        configuration = sib_api_v3_sdk.Configuration()
+        configuration.api_key['api-key'] = settings.BREVO_API_KEY
+        api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
+        
+        send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
+            to=[{"email": request.user.email}],
+            html_content='<h3>Brevo is Working!</h3>',
+            subject='Brevo Test',
+            sender={"email": settings.DEFAULT_FROM_EMAIL, "name": "BachMates"}
+        )
+        api_instance.send_transac_email(send_smtp_email)
+        return JsonResponse({'message': 'Success'})
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)

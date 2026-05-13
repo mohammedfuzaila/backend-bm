@@ -51,6 +51,7 @@ class Booking(models.Model):
         ('IN_PROGRESS', 'In Progress'),
         ('COMPLETED', 'Completed'),
         ('FAILED', 'Failed'),
+        ('EMAIL_FAILED', 'Email Failed'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='bookings')

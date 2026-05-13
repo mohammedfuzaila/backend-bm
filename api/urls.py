@@ -26,4 +26,5 @@ urlpatterns = [
     path('update-profile/', views.update_profile_view, name='update_profile'),
     path('booking/<int:pk>/cancel/', views.cancel_booking_view, name='cancel_booking'),
     path('latest-finished/', views.latest_finished_service_view, name='latest_finished'),
+    path('test-email/', views.test_email_view, name='test_email'),
 ]
