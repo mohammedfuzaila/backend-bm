@@ -813,8 +813,8 @@ def cancel_booking_view(request, pk):
                 agent_email = booking.assigned_agent.email
                 service_name = booking.service.title
                 
-                subject = f'Service Cancelled: {service_name}'
-                message = f'Hello {booking.assigned_agent.name},\n\nYour service for {service_name} will be cancelled. Please don\'t go to the location. \n\nWait for another service request in the meantime.\n\nThank you,\nBachMates Team'
+                subject = f'⚠️ Service Cancelled: {service_name}'
+                message = f'Hello {booking.assigned_agent.name}, the user has cancelled the service for "{service_name}". Please do not proceed to the location. Please wait for another service request. Thank you for your understanding!'
                 
                 # Send using Brevo API
                 configuration = sib_api_v3_sdk.Configuration()
