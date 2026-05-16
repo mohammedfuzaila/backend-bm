@@ -18,14 +18,18 @@ def send_followup_email(booking_id, agent_id):
             # Construct the complete action link
             complete_link = f"{settings.BACKEND_URL}/api/booking/{booking.id}/complete/{agent_id}/"
             
-            message = (
-                f"Hello {booking.assigned_agent.name},\n\n"
-                f"You accepted Booking #{booking.id} ({booking.service.title}) a while ago.\n"
-                f"Is the work completed?\n\n"
-                f"If yes, please click the link below to mark it as complete:\n"
-                f"COMPLETE: {complete_link}\n\n"
-                f"Thank you!"
-            )
+            agent_html = f"""
+            <html><body style='font-family:sans-serif;padding:20px;'>
+                <h2>Is the Work Completed?</h2>
+                <p>Hello {booking.assigned_agent.name},</p>
+                <p>You accepted <strong>Booking #{booking.id} ({booking.service.title})</strong> about 5 minutes ago.</p>
+                <p>If you have finished the work, please click the button below to mark it as complete so the customer can proceed with payment.</p>
+                <div style='margin: 25px 0;'>
+                    <a href='{complete_link}' style='background:#5c62f1;color:white;padding:12px 25px;text-decoration:none;border-radius:8px;font-weight:bold;'>Mark as Completed</a>
+                </div>
+                <p>Thank you!</p>
+            </body></html>
+            """
             
             configuration = sib_api_v3_sdk.Configuration()
             configuration.api_key['api-key'] = settings.BREVO_API_KEY
@@ -33,7 +37,7 @@ def send_followup_email(booking_id, agent_id):
             
             send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
                 to=[{"email": agent_email}],
-                html_content=message,
+                html_content=agent_html,
                 subject=subject,
                 sender={"email": settings.DEFAULT_FROM_EMAIL, "name": "BachMates"}
             )
@@ -44,10 +48,10 @@ def send_followup_email(booking_id, agent_id):
     except Exception as e:
         print(f"Error in follow-up task: {e}")
 
-def schedule_followup_email(booking_id, agent_id, delay_seconds=420):
+def schedule_followup_email(booking_id, agent_id, delay_seconds=300):
     """
     Schedules a follow-up email to be sent after `delay_seconds`.
-    Default is 420 seconds (7 minutes).
+    Default is 300 seconds (5 minutes).
     """
     timer = threading.Timer(delay_seconds, send_followup_email, args=[booking_id, agent_id])
     timer.start()

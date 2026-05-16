@@ -565,9 +565,60 @@ def agent_accept_booking(request, pk, agent_id):
     except Booking.DoesNotExist:
         return HttpResponse("<h2>Booking not found.</h2>", status=404)
 
-    # Schedule follow-up if agent assigned
+    # Schedule follow-up if agent assigned - Updated to 5 minutes (300s)
     if booking.assigned_agent:
-        schedule_followup_email(booking.id, booking.assigned_agent.id, delay_seconds=420)
+        schedule_followup_email(booking.id, booking.assigned_agent.id, delay_seconds=300)
+
+        # --- SEND IMMEDIATE EMAILS ---
+        try:
+            from sib_api_v3_sdk.rest import ApiException
+            configuration = sib_api_v3_sdk.Configuration()
+            configuration.api_key['api-key'] = settings.BREVO_API_KEY
+            api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
+            from_email = settings.DEFAULT_FROM_EMAIL
+
+            # 1. Email to Agent
+            agent_subject = f"Instructions for Booking #{booking.id}"
+            agent_html = f"""
+            <html><body style='font-family:sans-serif;padding:20px;'>
+                <h2>Job Accepted!</h2>
+                <p>Hello {booking.assigned_agent.name}, you have successfully accepted the job: <strong>{booking.service.title}</strong>.</p>
+                <p>Please follow these steps:</p>
+                <ol>
+                    <li>Head to the customer's location.</li>
+                    <li>Click the link in your dashboard to message the user.</li>
+                    <li>Mark the job as completed once finished.</li>
+                </ol>
+                <p>Thank you for your service!</p>
+            </body></html>
+            """
+            api_instance.send_transac_email(sib_api_v3_sdk.SendSmtpEmail(
+                to=[{"email": booking.assigned_agent.email}],
+                html_content=agent_html,
+                subject=agent_subject,
+                sender={"email": from_email, "name": "BachMates"}
+            ))
+
+            # 2. Email to User
+            user_subject = "Professional is on the way! - BachMates"
+            user_html = f"""
+            <html><body style='font-family:sans-serif;padding:20px;'>
+                <h2>Your Agent is Coming!</h2>
+                <p>Hello {booking.user.full_name or booking.user.email},</p>
+                <p>Great news! <strong>{booking.assigned_agent.name}</strong> is coming to your location right now.</p>
+                <p>Please be ready to receive them for your <strong>{booking.service.title}</strong> service.</p>
+                <p>You can track the progress live on our website.</p>
+            </body></html>
+            """
+            api_instance.send_transac_email(sib_api_v3_sdk.SendSmtpEmail(
+                to=[{"email": booking.user.email}],
+                html_content=user_html,
+                subject=user_subject,
+                sender={"email": from_email, "name": "BachMates"}
+            ))
+            print(f"[SUCCESS] Immediate emails sent for booking {booking.id}")
+        except Exception as e:
+            print(f"[ERROR] Immediate emails failed: {str(e)}")
 
     customer = booking.user
     customer_name = customer.full_name or customer.email
