@@ -150,21 +150,31 @@ def admin_category_detail_view(request, pk):
     except Category.DoesNotExist:
         return JsonResponse({"error": "Category not found"}, status=404)
 
-    if request.method == "PUT":
+    if request.method in ["PUT", "POST", "PATCH"]:
         try:
             data = json.loads(request.body)
             cat.name = data.get('name', cat.name)
             cat.icon = data.get('icon', cat.icon)
             cat.save()
-            return JsonResponse({"message": "Category updated"})
+            return JsonResponse({"message": "Category updated", "id": cat.id})
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=400)
             
-    if request.method == "DELETE":
+    elif request.method == "DELETE":
         cat.delete()
         return JsonResponse({"message": "Category deleted"})
         
-    return JsonResponse({"error": "Method not allowed"}, status=405)
+    elif request.method == "GET":
+        return JsonResponse({
+            "id": cat.id,
+            "name": cat.name,
+            "icon": cat.icon
+        })
+
+    elif request.method == "OPTIONS":
+        return HttpResponse(status=200)
+        
+    return JsonResponse({"error": f"Method {request.method} not allowed"}, status=405)
 
 def admin_stats_view(request):
     if not (request.user.is_staff or request.user.is_superuser):
@@ -806,17 +816,50 @@ def admin_agents_view(request):
             return JsonResponse({"error": str(e)}, status=400)
 
 @csrf_exempt
-def admin_agent_delete_view(request, pk):
+def admin_agent_detail_view(request, pk):
+    if not request.user.is_authenticated:
+        return JsonResponse({"error": "Login required"}, status=401)
     if not (request.user.is_staff or request.user.is_superuser):
         return JsonResponse({"error": "Admin only"}, status=403)
     
-    if request.method == "DELETE":
+    try:
+        agent = Agent.objects.get(pk=pk)
+    except Agent.DoesNotExist:
+        return JsonResponse({"error": "Agent not found"}, status=404)
+
+    if request.method in ["PUT", "POST", "PATCH"]:
         try:
-            Agent.objects.get(pk=pk).delete()
-            return JsonResponse({"message": "Agent deleted"})
-        except Agent.DoesNotExist:
-            return JsonResponse({"error": "Agent not found"}, status=404)
-    return JsonResponse({"error": "Method not allowed"}, status=405)
+            data = json.loads(request.body)
+            agent.name = data.get('name', agent.name)
+            agent.email = data.get('email', agent.email)
+            agent.phone = data.get('phone', agent.phone)
+            agent.is_available = data.get('is_available', agent.is_available)
+            agent.save()
+            
+            cat_ids = data.get('category_ids', [])
+            if cat_ids is not None:
+                # Use primary keys directly for robust M2M update
+                agent.categories.set(cat_ids)
+                
+            return JsonResponse({"message": "Agent updated successfully", "id": agent.id})
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+
+    elif request.method == "DELETE":
+        agent.delete()
+        return JsonResponse({"message": "Agent deleted"})
+    
+    elif request.method == "GET":
+        return JsonResponse({
+            "id": agent.id,
+            "name": agent.name,
+            "email": agent.email,
+            "phone": agent.phone,
+            "is_available": agent.is_available,
+            "category_ids": [c.id for c in agent.categories.all()]
+        })
+        
+    return JsonResponse({"error": f"Method {request.method} not allowed"}, status=405)
 
 @csrf_exempt
 def update_profile_view(request):
